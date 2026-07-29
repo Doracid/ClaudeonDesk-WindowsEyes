@@ -325,6 +325,11 @@ let lastWakeCursorX = null, lastWakeCursorY = null;
 
 let pendingState = null; // tracks what state is waiting in pendingTimer
 
+// ── Session state cycling (multi-session rotation) ──
+const CYCLE_INTERVAL_MS = 4000;  // 4s per session in rotation
+let cycleTimer = null;
+let cycleIndex = 0;
+
 // ── Permission bubble ──
 let bubble = null;
 let pendingPermission = null;  // { res, abortHandler, hookEventName }
@@ -454,6 +459,7 @@ function applyState(state, svgOverride) {
       autoReturnTimer = null;
       const resolved = resolveDisplayState();
       applyState(resolved, getSvgOverride(resolved));
+      startSessionCycle();
     }, WAKE_DURATION);
   } else if (AUTO_RETURN_MS[state]) {
     autoReturnTimer = setTimeout(() => {
@@ -468,6 +474,7 @@ function applyState(state, svgOverride) {
       } else {
         const resolved = resolveDisplayState();
         applyState(resolved, getSvgOverride(resolved));
+        startSessionCycle();
       }
     }, AUTO_RETURN_MS[state]);
   }
@@ -773,11 +780,13 @@ function updateSession(sessionId, state, event, sourcePid, cwd) {
   // Oneshot: show animation directly, auto-return will re-resolve from session map
   if (ONESHOT_STATES.has(state)) {
     setState(state);
+    startSessionCycle();
     return;
   }
 
   const displayState = resolveDisplayState();
   setState(displayState, getSvgOverride(displayState));
+  startSessionCycle();
 }
 
 let staleCleanupTimer = null;
@@ -820,6 +829,17 @@ function cleanStaleSessions() {
   } else if (changed) {
     const resolved = resolveDisplayState();
     setState(resolved, getSvgOverride(resolved));
+    startSessionCycle();
+  } else {
+    // No sessions changed, but cycle timer may have expired since last event.
+    // Only start cycle if we're in an idle-like state (not currently cycling).
+    // This prevents the cycle from starting during long oneshot animations.
+    if (!cycleTimer && !isMiniOrDozing() && getCycleSessions().length >= 2) {
+      // Don't override a oneshot that's still playing
+      if (!ONESHOT_STATES.has(currentState)) {
+        startSessionCycle();
+      }
+    }
   }
 }
 
@@ -868,6 +888,57 @@ function getJugglingSvg() {
     if (s.state === "juggling") n++;
   }
   return n >= 2 ? "clawd-working-conducting.svg" : "clawd-working-juggling.svg";
+}
+
+// ── Session state cycling ──
+function getCycleSessions() {
+  // Returns non-idle, non-sleeping sessions sorted by most recently updated first
+  return [...sessions.entries()]
+    .filter(([, s]) => s.state !== "idle" && s.state !== "sleeping")
+    .sort((a, b) => b[1].updatedAt - a[1].updatedAt);
+}
+
+function isMiniOrDozing() {
+  return miniMode || doNotDisturb || SLEEP_SEQUENCE.has(currentState);
+}
+
+function startSessionCycle() {
+  stopSessionCycle();
+  cycleIndex = 0;
+
+  // Only cycle when 2+ active non-idle sessions and not in mini/DND/sleep mode
+  if (isMiniOrDozing()) return;
+  const active = getCycleSessions();
+  if (active.length < 2) return;
+
+  scheduleNextCycle();
+}
+
+function scheduleNextCycle() {
+  if (cycleTimer) return;
+  cycleTimer = setTimeout(() => {
+    cycleTimer = null;
+
+    // Re-check conditions — things may have changed during the wait
+    if (isMiniOrDozing()) return;
+    const active = getCycleSessions();
+    if (active.length < 2) return;
+
+    cycleIndex = (cycleIndex + 1) % active.length;
+    const [, session] = active[cycleIndex];
+
+    // Apply the next session's state (setState handles min-display-time queuing)
+    setState(session.state, getSvgOverride(session.state));
+
+    scheduleNextCycle();
+  }, CYCLE_INTERVAL_MS);
+}
+
+function stopSessionCycle() {
+  if (cycleTimer) {
+    clearTimeout(cycleTimer);
+    cycleTimer = null;
+  }
 }
 
 function getSpeechTracker(sessionId) {
@@ -1298,6 +1369,7 @@ function buildSessionSubmenu() {
 function enableDoNotDisturb() {
   if (doNotDisturb) return;
   doNotDisturb = true;
+  stopSessionCycle();
   sendToRenderer("dnd-change", true);
   // Dismiss any pending permission bubble — DND means no interaction
   if (pendingPermission) resolvePermission("deny", "DND enabled");
@@ -2527,6 +2599,7 @@ function enterMiniMode(wa, viaMenu) {
   currentMiniX = wa.x + wa.width - Math.round(size.width * (1 - MINI_OFFSET_RATIO));
   miniSnap = { y: bounds.y, width: size.width, height: size.height };
 
+  stopSessionCycle();
   if (autoReturnTimer) { clearTimeout(autoReturnTimer); autoReturnTimer = null; }
   if (pendingTimer) { clearTimeout(pendingTimer); pendingTimer = null; pendingState = null; }
   stopWakePoll();
@@ -2601,6 +2674,7 @@ function exitMiniMode() {
     } else {
       const resolved = resolveDisplayState();
       applyState(resolved, getSvgOverride(resolved));
+      startSessionCycle();
     }
   });
 }
@@ -2796,6 +2870,7 @@ if (!gotTheLock) {
   app.on("before-quit", () => {
     isQuitting = true;
     savePrefs();
+    stopSessionCycle();
     if (pendingTimer) clearTimeout(pendingTimer);
     if (autoReturnTimer) clearTimeout(autoReturnTimer);
     if (mainTickTimer) clearInterval(mainTickTimer);
