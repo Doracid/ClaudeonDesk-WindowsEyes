@@ -41,6 +41,8 @@ const TERMINAL_NAMES_WIN = new Set([
   "code.exe", "alacritty.exe", "wezterm-gui.exe", "mintty.exe",
   "conemu64.exe", "conemu.exe", "hyper.exe", "tabby.exe",
   "antigravity.exe", "warp.exe", "iterm.exe", "ghostty.exe",
+  // Windows Terminal backend - each tab gets its own console host
+  "openconsole.exe",
 ]);
 const TERMINAL_NAMES_MAC = new Set([
   "terminal", "iterm2", "alacritty", "wezterm-gui", "kitty",
@@ -73,6 +75,8 @@ function getStablePid() {
         const parts = lines[lines.length - 1].split(",");
         name = (parts[1] || "").trim().toLowerCase();
         parentPid = parseInt(parts[2], 10);
+        // wmic can return the same pid back — that's a self-reference, stop walking
+        if (parentPid === pid) { terminalPid = pid; break; }
       } else {
         const cp = require("child_process");
         const ppidOut = cp.execSync(`ps -o ppid= -p ${pid}`, { encoding: "utf8", timeout: 1000 }).trim();
@@ -111,9 +115,11 @@ process.stdin.on("end", () => {
   send(sessionId, cwd);
 });
 
-// Safety: if stdin doesn't end in 400ms, send with default session
-// (200ms was too aggressive on slow machines / AV scanning)
-setTimeout(() => send("default", ""), 400);
+// Safety: if stdin doesn't end within timeout, exit without sending.
+// Sending "default" as session_id would merge all Claude Code sessions
+// into one, corrupting multi-session tracking in the desktop pet.
+// It's better to miss one event than to corrupt state.
+setTimeout(() => process.exit(0), 3000);
 
 function send(sessionId, cwd) {
   if (sent) return;

@@ -230,7 +230,7 @@ const SLEEP_SEQUENCE = new Set(["yawning", "dozing", "collapsing", "sleeping", "
 // ── Session tracking ──
 const sessions = new Map(); // session_id → { state, updatedAt, sourcePid, cwd }
 let lastClaudeCwd = null;
-const SESSION_STALE_MS = 300000; // 5 min cleanup
+const SESSION_STALE_MS = 120000; // 2 min cleanup (was 5 min — too long for abrupt exits)
 const WORKING_STALE_MS = 30000;  // 30s: working/thinking with no new event → decay to idle
 const STATE_PRIORITY = {
   error: 8, notification: 7, sweeping: 6, attention: 5,
@@ -716,20 +716,30 @@ function updateSession(sessionId, state, event, sourcePid, cwd) {
   const srcCwd = cwd || (existing && existing.cwd) || "";
   if (srcCwd) lastClaudeCwd = srcCwd;
 
+  // SessionStart in same cwd → previous session is definitely dead, clean it up
+  if (event === "SessionStart" && srcCwd) {
+    for (const [sid, s] of sessions) {
+      if (sid !== sessionId && s.cwd === srcCwd) {
+        sessions.delete(sid);
+      }
+    }
+  }
+
   if (event === "SessionEnd") {
     sessions.delete(sessionId);
   } else if (state === "attention" || state === "notification" || SLEEP_SEQUENCE.has(state)) {
-    // Stop/notification/sleep: session goes idle — if work continues, new hooks will re-set
+    // Stop/notification/sleep: session goes idle — if work continues, new hooks will re-set.
+    // But don't re-create a session that was already deleted (SessionEnd processed first).
+    if (!existing) return;
     sessions.set(sessionId, { state: "idle", updatedAt: Date.now(), sourcePid: srcPid, cwd: srcCwd });
   } else if (ONESHOT_STATES.has(state)) {
     // Other oneshots (error/sweeping/notification/carrying):
-    // preserve session's previous state so auto-return resolves correctly
+    // preserve session's previous state so auto-return resolves correctly.
+    // Don't create a new entry if session was already deleted.
     if (existing) {
       existing.updatedAt = Date.now();
       if (sourcePid) existing.sourcePid = sourcePid;
       if (cwd) existing.cwd = cwd;
-    } else {
-      sessions.set(sessionId, { state: "idle", updatedAt: Date.now(), sourcePid: srcPid, cwd: srcCwd });
     }
   } else {
     // Preserve juggling: subagent's own tool use (PreToolUse/PostToolUse)
