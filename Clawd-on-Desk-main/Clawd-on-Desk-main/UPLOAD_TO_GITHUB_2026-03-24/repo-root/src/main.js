@@ -231,7 +231,8 @@ const SLEEP_SEQUENCE = new Set(["yawning", "dozing", "collapsing", "sleeping", "
 const sessions = new Map(); // session_id → { state, updatedAt, sourcePid, cwd }
 let lastClaudeCwd = null;
 const SESSION_STALE_MS = 120000; // 2 min cleanup (was 5 min — too long for abrupt exits)
-const WORKING_STALE_MS = 30000;  // 30s: working/thinking with no new event → decay to idle
+const WORKING_STALE_MS = 60000;  // 60s: working/thinking with no new event → decay to idle
+                                  // (was 30s — too aggressive for long tool calls / extended thinking)
 const STATE_PRIORITY = {
   error: 8, notification: 7, sweeping: 6, attention: 5,
   carrying: 4, juggling: 4, working: 3, thinking: 2, idle: 1, sleeping: 0,
@@ -751,6 +752,17 @@ function updateSession(sessionId, state, event, sourcePid, cwd) {
     }
   }
   cleanStaleSessions();
+
+  // Debug log every session event
+  const sessionCount = sessions.size;
+  if (sessionCount > 0) {
+    const states = [...sessions.entries()].map(([id, s]) =>
+      `${id.slice(0,8)}:${s.state}${s.cwd ? "("+path.basename(s.cwd)+")" : ""}`
+    ).join(", ");
+    console.log(`[session] ${event} → ${state} | sessions(${sessionCount}): ${states}`);
+  } else {
+    console.log(`[session] ${event} → ${state} | no sessions (idle/sleep)`);
+  }
 
   // All sessions ended → sleep immediately
   if (sessions.size === 0 && event === "SessionEnd") {
