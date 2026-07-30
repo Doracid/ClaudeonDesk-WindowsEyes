@@ -1,3 +1,5 @@
+> 本仓库在 [Angel2518975237/Clawd-on-Desk](https://github.com/Angel2518975237/Clawd-on-Desk) 的基础上修改而成
+
 # Clawd-on-Desk（macOS 适配版 + Claude 回复气泡版）
 参考博主：rullerzhou-afk/clawd-on-desk
 Clawd on Desk （macOS 适配版 + Claude 回复气泡版）
